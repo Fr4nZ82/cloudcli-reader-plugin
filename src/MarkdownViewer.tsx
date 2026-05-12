@@ -1,5 +1,6 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { MermaidBlock } from './MermaidBlock.js';
 
 interface Props {
   content: string;
@@ -70,9 +71,24 @@ export function MarkdownViewer({ content, theme }: Props) {
               </code>
             );
           },
-          pre: ({ children }) => (
-            <pre style={{ background: c.codeBg, padding: '0.9em 1em', borderRadius: '6px', overflowX: 'auto', margin: '1em 0', fontSize: '0.88em', lineHeight: 1.5 }}>{children}</pre>
-          ),
+          pre: (props: any) => {
+            // react-markdown wraps fenced code blocks as <pre><code class="language-xxx">.
+            // Intercept mermaid fences and render them as SVG diagrams instead.
+            const child = Array.isArray(props.children) ? props.children[0] : props.children;
+            const childClassName: string | undefined = child?.props?.className;
+            if (childClassName === 'language-mermaid') {
+              const raw = child.props.children;
+              const code = String(
+                Array.isArray(raw) ? raw.join('') : (raw ?? '')
+              ).trim();
+              return <MermaidBlock code={code} theme={theme} />;
+            }
+            return (
+              <pre style={{ background: c.codeBg, padding: '0.9em 1em', borderRadius: '6px', overflowX: 'auto', margin: '1em 0', fontSize: '0.88em', lineHeight: 1.5 }}>
+                {props.children}
+              </pre>
+            );
+          },
           table: ({ children }) => (
             <div style={{ overflowX: 'auto', margin: '1em 0' }}>
               <table style={{ borderCollapse: 'collapse', width: '100%' }}>{children}</table>

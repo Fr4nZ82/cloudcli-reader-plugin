@@ -81,7 +81,8 @@ interface ItemProps {
 }
 
 function TreeItem({ node, depth, selected, onSelect, theme }: ItemProps) {
-  const [expanded, setExpanded] = useState(depth < 1);
+  // All folders collapsed by default — user expands on demand.
+  const [expanded, setExpanded] = useState(false);
   const isFolder = !node.file;
   const isSelected = !!node.file && selected === node.file;
 

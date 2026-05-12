@@ -1,7 +1,7 @@
 {
   "name": "cloudcli-reader-plugin",
   "displayName": "Reader",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Read and annotate markdown files from any device. Tap-to-comment on paragraphs, side bubbles, file-embedded markers that AI agents can read.",
   "author": "Fr4nZ82",
   "icon": "icon.svg",
