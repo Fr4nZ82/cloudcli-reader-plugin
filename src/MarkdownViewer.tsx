@@ -13,7 +13,6 @@ interface Props {
   onNavigate: (file: string) => void;
   onAddComment: (block: ParsedBlock, blockIndex: number) => void;
   onEditComment: (comment: ParsedComment, block: ParsedBlock) => void;
-  onResolveComment: (comment: ParsedComment) => void | Promise<void>;
 }
 
 const darkColors = {
@@ -53,7 +52,7 @@ function resolveRelative(base: string, rel: string): string {
   return resolved.join('/');
 }
 
-export function MarkdownViewer({ content, theme, fontSize, currentFile, onNavigate, onAddComment, onEditComment, onResolveComment }: Props) {
+export function MarkdownViewer({ content, theme, fontSize, currentFile, onNavigate, onAddComment, onEditComment }: Props) {
   const c = theme === 'dark' ? darkColors : lightColors;
   const blocks = useMemo(() => parseBlocks(content), [content]);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
@@ -87,7 +86,6 @@ export function MarkdownViewer({ content, theme, fontSize, currentFile, onNaviga
             onAddComment(block, i);
           }}
           onEditComment={(comment) => onEditComment(comment, block)}
-          onResolveComment={onResolveComment}
         />
       ))}
     </div>
@@ -105,10 +103,9 @@ interface BlockViewProps {
   onDeactivate: () => void;
   onAddComment: () => void;
   onEditComment: (comment: ParsedComment) => void;
-  onResolveComment: (comment: ParsedComment) => void | Promise<void>;
 }
 
-function BlockView({ block, isActive, theme, colors, currentFile, onNavigate, onActivate, onDeactivate, onAddComment, onEditComment, onResolveComment }: BlockViewProps) {
+function BlockView({ block, isActive, theme, colors, currentFile, onNavigate, onActivate, onDeactivate, onAddComment, onEditComment }: BlockViewProps) {
   const handleClick = (e: ReactMouseEvent) => {
     const target = e.target as HTMLElement;
     if (target.closest('a, button, input, textarea')) return;
@@ -161,7 +158,6 @@ function BlockView({ block, isActive, theme, colors, currentFile, onNavigate, on
               comment={comment}
               colors={colors}
               onEdit={() => onEditComment(comment)}
-              onResolve={() => onResolveComment(comment)}
             />
           ))}
         </div>
@@ -170,7 +166,7 @@ function BlockView({ block, isActive, theme, colors, currentFile, onNavigate, on
   );
 }
 
-function CommentCard({ comment, colors, onEdit, onResolve }: { comment: ParsedComment; colors: Colors; onEdit: () => void; onResolve: () => void }) {
+function CommentCard({ comment, colors, onEdit }: { comment: ParsedComment; colors: Colors; onEdit: () => void }) {
   const time = comment.time ? formatTime(comment.time) : '';
   return (
     <div style={{
@@ -185,10 +181,7 @@ function CommentCard({ comment, colors, onEdit, onResolve }: { comment: ParsedCo
         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           <strong style={{ color: colors.text }}>{comment.by || 'user'}</strong>{time && ` · ${time}`}
         </span>
-        <span style={{ display: 'flex', gap: '10px', flexShrink: 0 }}>
-          <button onClick={(e) => { e.stopPropagation(); onEdit(); }} style={linkBtn(colors)}>edit</button>
-          <button onClick={(e) => { e.stopPropagation(); onResolve(); }} style={linkBtn(colors)}>risolvi</button>
-        </span>
+        <button onClick={(e) => { e.stopPropagation(); onEdit(); }} style={linkBtn(colors)}>edit</button>
       </div>
       <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{comment.body}</div>
     </div>
@@ -215,6 +208,7 @@ function linkBtn(colors: Colors): CSSProperties {
     padding: 0,
     fontFamily: 'inherit',
     textDecoration: 'underline',
+    flexShrink: 0,
   };
 }
 

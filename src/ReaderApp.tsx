@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { PluginAPI, PluginContext } from './types.js';
 import { FileTree } from './FileTree.js';
@@ -7,7 +7,7 @@ import { CommentComposer } from './CommentComposer.js';
 import {
   insertComment,
   newCommentId,
-  removeComment,
+  parseBlocks,
   updateComment,
   type ParsedBlock,
   type ParsedComment,
@@ -51,6 +51,44 @@ function blockSnippet(block: ParsedBlock): string {
   return text.length > 100 ? text.slice(0, 98) + '…' : text;
 }
 
+function offsetToLine(content: string, offset: number): number {
+  let line = 1;
+  const upTo = Math.min(offset, content.length);
+  for (let i = 0; i < upTo; i++) {
+    if (content[i] === '\n') line++;
+  }
+  return line;
+}
+
+function buildSubmitPayload(
+  content: string,
+  projectPath: string,
+  filePath: string,
+  blocks: ParsedBlock[],
+): string {
+  const items: Array<{ block: ParsedBlock; comment: ParsedComment }> = [];
+  for (const block of blocks) {
+    for (const comment of block.comments) {
+      items.push({ block, comment });
+    }
+  }
+  const out: string[] = [];
+  out.push(`Ho ${items.length} commento${items.length === 1 ? '' : 'i'} aperto${items.length === 1 ? '' : 'i'} in \`${filePath}\` (progetto \`${projectPath}\`).`);
+  out.push('');
+  for (const { block, comment } of items) {
+    const blockLine = offsetToLine(content, block.startOffset);
+    const markerStartLine = offsetToLine(content, comment.startOffset);
+    const markerEndLine = offsetToLine(content, comment.endOffset);
+    const snippet = blockSnippet(block);
+    out.push(`[${comment.id}] marker linee ${markerStartLine}-${markerEndLine} — paragrafo a L${blockLine}: "${snippet}"`);
+    out.push(comment.body);
+    out.push('');
+  }
+  out.push('---');
+  out.push('Per la convenzione completa dei marker `<!-- @comment id="..." -->...<!-- /@comment -->` vedi la sezione "Commenti utente nei file markdown" in `CLAUDE.md`. Risolvi ogni commento sopra (modificando il file dove necessario) e rimuovi il blocco marker corrispondente quando hai finito.');
+  return out.join('\n');
+}
+
 export function ReaderApp({ api }: Props) {
   const [ctx, setCtx] = useState<PluginContext>(api.context);
   const [files, setFiles] = useState<string[]>([]);
@@ -69,6 +107,13 @@ export function ReaderApp({ api }: Props) {
     blockIndex: number;
     existing?: ParsedComment;
   } | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+
+  const blocks = useMemo(() => parseBlocks(content), [content]);
+  const commentCount = useMemo(
+    () => blocks.reduce((acc, b) => acc + b.comments.length, 0),
+    [blocks]
+  );
 
   useEffect(() => api.onContextChange(setCtx), [api]);
 
@@ -85,6 +130,11 @@ export function ReaderApp({ api }: Props) {
       localStorage.setItem('reader.fontSize', String(fontSize));
     }
   }, [fontSize]);
+
+  const showToast = (msg: string) => {
+    setToast(msg);
+    window.setTimeout(() => setToast((cur) => (cur === msg ? null : cur)), 3500);
+  };
 
   const reloadFiles = () => {
     if (!ctx.project) {
@@ -146,16 +196,6 @@ export function ReaderApp({ api }: Props) {
     setComposerState({ block, blockIndex: -1, existing: comment });
   };
 
-  const handleResolveComment = async (comment: ParsedComment) => {
-    if (typeof window !== 'undefined' && !window.confirm('Risolvere e rimuovere questo commento?')) return;
-    const next = removeComment(content, comment);
-    try {
-      await writeContent(next);
-    } catch (err: any) {
-      setError(`Resolve failed: ${err?.message ?? err}`);
-    }
-  };
-
   const handleSaveComment = async (body: string, author: string) => {
     if (!composerState) return;
     if (typeof localStorage !== 'undefined') localStorage.setItem('reader.author', author);
@@ -177,6 +217,21 @@ export function ReaderApp({ api }: Props) {
     setComposerState(null);
   };
 
+  const handleSubmit = async () => {
+    if (!ctx.project || !selected) return;
+    if (commentCount === 0) {
+      showToast('Nessun commento da inviare.');
+      return;
+    }
+    const payload = buildSubmitPayload(content, ctx.project.path, selected, blocks);
+    try {
+      await navigator.clipboard.writeText(payload);
+      showToast(`${commentCount} commento${commentCount === 1 ? '' : 'i'} copiato${commentCount === 1 ? '' : 'i'} negli appunti — incolla nella chat.`);
+    } catch (err: any) {
+      setError(`Copia negli appunti fallita: ${err?.message ?? err}`);
+    }
+  };
+
   const bg = ctx.theme === 'dark' ? '#0e0e10' : '#fafafa';
   const sidebarBg = ctx.theme === 'dark' ? '#161618' : '#ffffff';
   const border = ctx.theme === 'dark' ? '#262628' : '#e5e5e7';
@@ -194,6 +249,19 @@ export function ReaderApp({ api }: Props) {
     fontFamily: 'inherit',
     minWidth: '32px',
   });
+
+  const submitBtnStyle: CSSProperties = {
+    background: commentCount > 0 ? '#185FA5' : 'transparent',
+    border: `1px solid ${commentCount > 0 ? '#185FA5' : border}`,
+    color: commentCount > 0 ? '#ffffff' : fg,
+    padding: '4px 12px',
+    borderRadius: '4px',
+    fontSize: '12px',
+    fontWeight: 500,
+    cursor: commentCount > 0 ? 'pointer' : 'default',
+    opacity: commentCount > 0 ? 1 : 0.4,
+    fontFamily: 'inherit',
+  };
 
   const sidebar = (
     <aside style={{
@@ -279,7 +347,7 @@ export function ReaderApp({ api }: Props) {
             ☰ Files
           </button>
         )}
-        <span style={{ fontSize: '13px', opacity: 0.75, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', flex: 1 }}>
+        <span style={{ fontSize: '13px', opacity: 0.75, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>
           {selected ?? '(nessun file)'}
         </span>
         <button
@@ -297,6 +365,14 @@ export function ReaderApp({ api }: Props) {
           style={toolbarBtnStyle(fontSize >= MAX_FONT_SIZE)}
         >
           A+
+        </button>
+        <button
+          onClick={handleSubmit}
+          disabled={commentCount === 0}
+          title={commentCount === 0 ? 'Nessun commento da inviare' : `Copia ${commentCount} commenti negli appunti per inviarli all'agente`}
+          style={submitBtnStyle}
+        >
+          Invia ({commentCount})
         </button>
       </div>
 
@@ -367,7 +443,6 @@ export function ReaderApp({ api }: Props) {
               onNavigate={handleNavigate}
               onAddComment={handleAddComment}
               onEditComment={handleEditComment}
-              onResolveComment={handleResolveComment}
             />
           )}
         </main>
@@ -382,6 +457,26 @@ export function ReaderApp({ api }: Props) {
           onCancel={() => setComposerState(null)}
           onSave={handleSaveComment}
         />
+      )}
+
+      {toast && (
+        <div style={{
+          position: 'fixed',
+          bottom: '24px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          background: ctx.theme === 'dark' ? 'rgba(20, 20, 22, 0.95)' : 'rgba(40, 40, 45, 0.95)',
+          color: '#ffffff',
+          padding: '10px 18px',
+          borderRadius: '6px',
+          fontSize: '13px',
+          zIndex: 200,
+          boxShadow: '0 4px 18px rgba(0, 0, 0, 0.3)',
+          maxWidth: '90vw',
+          textAlign: 'center',
+        }}>
+          {toast}
+        </div>
       )}
     </div>
   );
