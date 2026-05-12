@@ -12,6 +12,7 @@ import {
   type ParsedBlock,
   type ParsedComment,
 } from './parser.js';
+import { sendPayloadToChat } from './chatBridge.js';
 
 interface Props {
   api: PluginAPI;
@@ -60,12 +61,6 @@ function offsetToLine(content: string, offset: number): number {
   return line;
 }
 
-/**
- * Build a self-contained payload describing the open comments in the current
- * file. The payload carries everything the receiving agent needs — marker
- * convention, processing instructions, and the comment list — so no
- * project-side CLAUDE.md modification is required.
- */
 function buildSubmitPayload(
   content: string,
   projectPath: string,
@@ -146,6 +141,7 @@ export function ReaderApp({ api }: Props) {
     existing?: ParsedComment;
   } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   const blocks = useMemo(() => parseBlocks(content), [content]);
   const commentCount = useMemo(
@@ -169,9 +165,9 @@ export function ReaderApp({ api }: Props) {
     }
   }, [fontSize]);
 
-  const showToast = (msg: string) => {
+  const showToast = (msg: string, durationMs = 3500) => {
     setToast(msg);
-    window.setTimeout(() => setToast((cur) => (cur === msg ? null : cur)), 3500);
+    window.setTimeout(() => setToast((cur) => (cur === msg ? null : cur)), durationMs);
   };
 
   const reloadFiles = () => {
@@ -261,13 +257,29 @@ export function ReaderApp({ api }: Props) {
       showToast('Nessun commento da inviare.');
       return;
     }
+    setSubmitting(true);
     const payload = buildSubmitPayload(content, ctx.project.path, selected, blocks);
+
+    // Try auto-send into the active Chat tab session first
+    const result = await sendPayloadToChat(payload);
+    if (result.ok) {
+      if (result.injectedOnly) {
+        showToast(`Payload incollato in Chat. Se non parte da solo premi Invio.`, 5000);
+      } else {
+        showToast(`Inviati ${commentCount} commento${commentCount === 1 ? '' : 'i'} alla chat.`);
+      }
+      setSubmitting(false);
+      return;
+    }
+
+    // Fall back to clipboard if the DOM bridge could not locate the chat input
     try {
       await navigator.clipboard.writeText(payload);
-      showToast(`${commentCount} ${commentCount === 1 ? 'commento copiato' : 'commenti copiati'} negli appunti — incolla nella chat.`);
+      showToast(`Auto-send non riuscito (${result.reason ?? 'unknown'}) — payload copiato negli appunti, incolla manualmente in Chat.`, 6000);
     } catch (err: any) {
-      setError(`Copia negli appunti fallita: ${err?.message ?? err}`);
+      setError(`Auto-send e copia negli appunti falliti: ${err?.message ?? err}`);
     }
+    setSubmitting(false);
   };
 
   const bg = ctx.theme === 'dark' ? '#0e0e10' : '#fafafa';
@@ -288,16 +300,17 @@ export function ReaderApp({ api }: Props) {
     minWidth: '32px',
   });
 
+  const submitBtnEnabled = commentCount > 0 && !submitting;
   const submitBtnStyle: CSSProperties = {
-    background: commentCount > 0 ? '#185FA5' : 'transparent',
-    border: `1px solid ${commentCount > 0 ? '#185FA5' : border}`,
-    color: commentCount > 0 ? '#ffffff' : fg,
+    background: submitBtnEnabled ? '#185FA5' : 'transparent',
+    border: `1px solid ${submitBtnEnabled ? '#185FA5' : border}`,
+    color: submitBtnEnabled ? '#ffffff' : fg,
     padding: '4px 12px',
     borderRadius: '4px',
     fontSize: '12px',
     fontWeight: 500,
-    cursor: commentCount > 0 ? 'pointer' : 'default',
-    opacity: commentCount > 0 ? 1 : 0.4,
+    cursor: submitBtnEnabled ? 'pointer' : 'default',
+    opacity: submitBtnEnabled ? 1 : 0.4,
     fontFamily: 'inherit',
   };
 
@@ -406,11 +419,11 @@ export function ReaderApp({ api }: Props) {
         </button>
         <button
           onClick={handleSubmit}
-          disabled={commentCount === 0}
-          title={commentCount === 0 ? 'Nessun commento da inviare' : `Copia ${commentCount} commenti negli appunti per inviarli all'agente`}
+          disabled={!submitBtnEnabled}
+          title={commentCount === 0 ? 'Nessun commento da inviare' : `Invia ${commentCount} commenti nella chat selezionata`}
           style={submitBtnStyle}
         >
-          Invia ({commentCount})
+          {submitting ? 'Invio…' : `Invia (${commentCount})`}
         </button>
       </div>
 

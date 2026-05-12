@@ -1,6 +1,6 @@
 {
   "name": "cloudcli-reader-plugin",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "CloudCLI plugin for reading and annotating markdown files from any device.",
