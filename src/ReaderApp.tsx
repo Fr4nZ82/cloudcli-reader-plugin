@@ -60,6 +60,12 @@ function offsetToLine(content: string, offset: number): number {
   return line;
 }
 
+/**
+ * Build a self-contained payload describing the open comments in the current
+ * file. The payload carries everything the receiving agent needs — marker
+ * convention, processing instructions, and the comment list — so no
+ * project-side CLAUDE.md modification is required.
+ */
 function buildSubmitPayload(
   content: string,
   projectPath: string,
@@ -72,20 +78,52 @@ function buildSubmitPayload(
       items.push({ block, comment });
     }
   }
+  const n = items.length;
+  const wordCount = n === 1 ? 'commento aperto' : 'commenti aperti';
+
   const out: string[] = [];
-  out.push(`Ho ${items.length} commento${items.length === 1 ? '' : 'i'} aperto${items.length === 1 ? '' : 'i'} in \`${filePath}\` (progetto \`${projectPath}\`).`);
+  out.push(`Ho ${n} ${wordCount} nel file \`${filePath}\` (progetto \`${projectPath}\`).`);
   out.push('');
+  out.push('Ogni commento è salvato nel file come blocco HTML-comment di questa forma:');
+  out.push('');
+  out.push('```');
+  out.push('<!-- @comment id="..." by="..." time="..." -->');
+  out.push('corpo libero del commento, può andare a capo, può contenere markdown');
+  out.push('<!-- /@comment -->');
+  out.push('```');
+  out.push('');
+  out.push('Il blocco marker è attaccato al blocco markdown che lo precede (paragrafo, heading, lista, code block, ecc.) ed è invisibile al rendering markdown — è un commento HTML standard.');
+  out.push('');
+  out.push('Per ogni commento elencato sotto:');
+  out.push('');
+  out.push(`1. Apri \`${filePath}\`.`);
+  out.push('2. Localizza il blocco `<!-- @comment id="..." -->...<!-- /@comment -->` con l\'`id` indicato (l\'`id` è univoco nel file).');
+  out.push('3. Capisci la richiesta dal corpo del commento, riferita al blocco markdown che precede il marker.');
+  out.push('4. Esegui la modifica nel file dove serve (modifica del blocco, aggiunta di una sezione, riformulazione, ecc.), restando dentro lo scope di lavoro consentito dal progetto.');
+  out.push('5. Quando hai finito, **rimuovi l\'intero blocco marker** (apertura + corpo + chiusura) dal file. Lascia invariato il blocco markdown precedente, a meno che la modifica richiesta non lo abbia esplicitamente toccato.');
+  out.push('6. Se la richiesta non è chiara, non eseguibile, o ti costringe a uscire dallo scope, chiedi conferma all\'utente prima di rimuovere il marker.');
+  out.push('');
+  out.push('---');
+  out.push('');
+  out.push(`Commenti (${n}):`);
+  out.push('');
+
   for (const { block, comment } of items) {
     const blockLine = offsetToLine(content, block.startOffset);
     const markerStartLine = offsetToLine(content, comment.startOffset);
     const markerEndLine = offsetToLine(content, comment.endOffset);
     const snippet = blockSnippet(block);
-    out.push(`[${comment.id}] marker linee ${markerStartLine}-${markerEndLine} — paragrafo a L${blockLine}: "${snippet}"`);
+    out.push(`### [${comment.id}] marker linee ${markerStartLine}-${markerEndLine}`);
+    out.push(`Blocco a L${blockLine}: "${snippet}"`);
+    const meta: string[] = [];
+    if (comment.by) meta.push(comment.by);
+    if (comment.time) meta.push(comment.time);
+    if (meta.length > 0) out.push(`Autore: ${meta.join(' · ')}`);
+    out.push('');
     out.push(comment.body);
     out.push('');
   }
-  out.push('---');
-  out.push('Per la convenzione completa dei marker `<!-- @comment id="..." -->...<!-- /@comment -->` vedi la sezione "Commenti utente nei file markdown" in `CLAUDE.md`. Risolvi ogni commento sopra (modificando il file dove necessario) e rimuovi il blocco marker corrispondente quando hai finito.');
+
   return out.join('\n');
 }
 
@@ -226,7 +264,7 @@ export function ReaderApp({ api }: Props) {
     const payload = buildSubmitPayload(content, ctx.project.path, selected, blocks);
     try {
       await navigator.clipboard.writeText(payload);
-      showToast(`${commentCount} commento${commentCount === 1 ? '' : 'i'} copiato${commentCount === 1 ? '' : 'i'} negli appunti — incolla nella chat.`);
+      showToast(`${commentCount} ${commentCount === 1 ? 'commento copiato' : 'commenti copiati'} negli appunti — incolla nella chat.`);
     } catch (err: any) {
       setError(`Copia negli appunti fallita: ${err?.message ?? err}`);
     }
