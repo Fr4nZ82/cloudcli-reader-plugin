@@ -1,7 +1,17 @@
 import { useEffect, useState } from 'react';
+import type { CSSProperties } from 'react';
 import type { PluginAPI, PluginContext } from './types.js';
 import { FileTree } from './FileTree.js';
 import { MarkdownViewer } from './MarkdownViewer.js';
+import { CommentComposer } from './CommentComposer.js';
+import {
+  insertComment,
+  newCommentId,
+  removeComment,
+  updateComment,
+  type ParsedBlock,
+  type ParsedComment,
+} from './parser.js';
 
 interface Props {
   api: PluginAPI;
@@ -9,11 +19,36 @@ interface Props {
 
 function projectLabel(p: PluginContext['project']): string {
   if (!p) return '';
-  // CloudCLI passes an internal UUID as `name` — derive a friendly label
-  // from the last segment of the path instead.
   const path = p.path ?? '';
   const parts = path.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] || p.name || path;
+}
+
+const DEFAULT_FONT_SIZE = 17;
+const MIN_FONT_SIZE = 12;
+const MAX_FONT_SIZE = 28;
+
+function loadFontSize(): number {
+  if (typeof localStorage === 'undefined') return DEFAULT_FONT_SIZE;
+  const stored = parseInt(localStorage.getItem('reader.fontSize') ?? '', 10);
+  if (isNaN(stored)) return DEFAULT_FONT_SIZE;
+  return Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, stored));
+}
+
+function loadAuthor(): string {
+  if (typeof localStorage === 'undefined') return 'user';
+  return localStorage.getItem('reader.author') || 'user';
+}
+
+function blockSnippet(block: ParsedBlock): string {
+  const text = block.source
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('<!--'))
+    .join(' ')
+    .replace(/[#*_`>]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text.length > 100 ? text.slice(0, 98) + '…' : text;
 }
 
 export function ReaderApp({ api }: Props) {
@@ -28,6 +63,12 @@ export function ReaderApp({ api }: Props) {
   const [mobile, setMobile] = useState<boolean>(
     typeof window !== 'undefined' && window.matchMedia('(max-width: 760px)').matches
   );
+  const [fontSize, setFontSize] = useState<number>(loadFontSize);
+  const [composerState, setComposerState] = useState<{
+    block: ParsedBlock;
+    blockIndex: number;
+    existing?: ParsedComment;
+  } | null>(null);
 
   useEffect(() => api.onContextChange(setCtx), [api]);
 
@@ -39,6 +80,12 @@ export function ReaderApp({ api }: Props) {
     return () => mq.removeEventListener('change', handler);
   }, []);
 
+  useEffect(() => {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('reader.fontSize', String(fontSize));
+    }
+  }, [fontSize]);
+
   const reloadFiles = () => {
     if (!ctx.project) {
       setFiles([]);
@@ -47,9 +94,7 @@ export function ReaderApp({ api }: Props) {
     setLoadingFiles(true);
     setError(null);
     api.rpc('GET', `/files?project=${encodeURIComponent(ctx.project.path)}`)
-      .then((res: any) => {
-        setFiles(Array.isArray(res?.files) ? res.files : []);
-      })
+      .then((res: any) => setFiles(Array.isArray(res?.files) ? res.files : []))
       .catch((err) => setError(`Failed to list files: ${err?.message ?? err}`))
       .finally(() => setLoadingFiles(false));
   };
@@ -78,10 +123,77 @@ export function ReaderApp({ api }: Props) {
     if (mobile) setShowTree(false);
   };
 
+  const handleNavigate = (filePath: string) => {
+    if (files.includes(filePath)) {
+      setSelected(filePath);
+    } else {
+      setError(`File non trovato nel progetto: ${filePath}`);
+    }
+  };
+
+  const writeContent = async (newContent: string): Promise<void> => {
+    if (!ctx.project || !selected) throw new Error('no project or file selected');
+    const rpcPath = `/file?project=${encodeURIComponent(ctx.project.path)}&path=${encodeURIComponent(selected)}`;
+    await api.rpc('POST', rpcPath, { content: newContent });
+    setContent(newContent);
+  };
+
+  const handleAddComment = (block: ParsedBlock, blockIndex: number) => {
+    setComposerState({ block, blockIndex });
+  };
+
+  const handleEditComment = (comment: ParsedComment, block: ParsedBlock) => {
+    setComposerState({ block, blockIndex: -1, existing: comment });
+  };
+
+  const handleResolveComment = async (comment: ParsedComment) => {
+    if (typeof window !== 'undefined' && !window.confirm('Risolvere e rimuovere questo commento?')) return;
+    const next = removeComment(content, comment);
+    try {
+      await writeContent(next);
+    } catch (err: any) {
+      setError(`Resolve failed: ${err?.message ?? err}`);
+    }
+  };
+
+  const handleSaveComment = async (body: string, author: string) => {
+    if (!composerState) return;
+    if (typeof localStorage !== 'undefined') localStorage.setItem('reader.author', author);
+    let newContent: string;
+    if (composerState.existing) {
+      newContent = updateComment(content, composerState.existing, body);
+    } else {
+      const newComment: ParsedComment = {
+        id: newCommentId(),
+        by: author,
+        time: new Date().toISOString(),
+        body,
+        startOffset: 0,
+        endOffset: 0,
+      };
+      newContent = insertComment(content, composerState.block, newComment);
+    }
+    await writeContent(newContent);
+    setComposerState(null);
+  };
+
   const bg = ctx.theme === 'dark' ? '#0e0e10' : '#fafafa';
   const sidebarBg = ctx.theme === 'dark' ? '#161618' : '#ffffff';
   const border = ctx.theme === 'dark' ? '#262628' : '#e5e5e7';
   const fg = ctx.theme === 'dark' ? '#e8e8e8' : '#1a1a1a';
+
+  const toolbarBtnStyle = (disabled = false): CSSProperties => ({
+    background: 'transparent',
+    border: `1px solid ${border}`,
+    color: fg,
+    padding: '4px 10px',
+    borderRadius: '4px',
+    fontSize: '12px',
+    cursor: disabled ? 'default' : 'pointer',
+    opacity: disabled ? 0.4 : 1,
+    fontFamily: 'inherit',
+    minWidth: '32px',
+  });
 
   const sidebar = (
     <aside style={{
@@ -119,6 +231,7 @@ export function ReaderApp({ api }: Props) {
             fontSize: '11px',
             cursor: 'pointer',
             opacity: loadingFiles ? 0.5 : 1,
+            fontFamily: 'inherit',
           }}
         >
           {loadingFiles ? '…' : 'Refresh'}
@@ -140,48 +253,59 @@ export function ReaderApp({ api }: Props) {
       color: fg,
       fontFamily: 'system-ui, -apple-system, sans-serif',
     }}>
-      {mobile && (
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '10px',
-          padding: '8px 12px',
-          borderBottom: `1px solid ${border}`,
-          background: sidebarBg,
-          flexShrink: 0,
-        }}>
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        padding: '8px 12px',
+        borderBottom: `1px solid ${border}`,
+        background: sidebarBg,
+        flexShrink: 0,
+      }}>
+        {mobile && (
           <button
             onClick={() => setShowTree(true)}
             style={{
               background: 'transparent',
               border: `1px solid ${border}`,
               color: fg,
-              padding: '6px 12px',
+              padding: '5px 10px',
               borderRadius: '4px',
               fontSize: '13px',
               cursor: 'pointer',
+              fontFamily: 'inherit',
             }}
           >
             ☰ Files
           </button>
-          <span style={{ fontSize: '13px', opacity: 0.75, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', flex: 1 }}>
-            {selected ?? '(nessun file)'}
-          </span>
-        </div>
-      )}
+        )}
+        <span style={{ fontSize: '13px', opacity: 0.75, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', flex: 1 }}>
+          {selected ?? '(nessun file)'}
+        </span>
+        <button
+          onClick={() => setFontSize((s) => Math.max(MIN_FONT_SIZE, s - 2))}
+          disabled={fontSize <= MIN_FONT_SIZE}
+          title={`Diminuisci font (attuale ${fontSize}px)`}
+          style={toolbarBtnStyle(fontSize <= MIN_FONT_SIZE)}
+        >
+          A−
+        </button>
+        <button
+          onClick={() => setFontSize((s) => Math.min(MAX_FONT_SIZE, s + 2))}
+          disabled={fontSize >= MAX_FONT_SIZE}
+          title={`Aumenta font (attuale ${fontSize}px)`}
+          style={toolbarBtnStyle(fontSize >= MAX_FONT_SIZE)}
+        >
+          A+
+        </button>
+      </div>
 
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative', minHeight: 0 }}>
         {!mobile && sidebar}
 
         {mobile && showTree && (
           <div
-            style={{
-              position: 'absolute',
-              inset: 0,
-              background: 'rgba(0,0,0,0.45)',
-              zIndex: 10,
-              display: 'flex',
-            }}
+            style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 10, display: 'flex' }}
             onClick={() => setShowTree(false)}
           >
             <div onClick={(e) => e.stopPropagation()} style={{ height: '100%', display: 'flex' }}>
@@ -200,8 +324,17 @@ export function ReaderApp({ api }: Props) {
               color: ctx.theme === 'dark' ? '#ff9b9b' : '#a02525',
               marginBottom: '16px',
               fontSize: '14px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
             }}>
-              {error}
+              <span style={{ flex: 1 }}>{error}</span>
+              <button
+                onClick={() => setError(null)}
+                style={{ background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer', fontSize: '16px', padding: 0 }}
+              >
+                ×
+              </button>
             </div>
           )}
 
@@ -226,10 +359,30 @@ export function ReaderApp({ api }: Props) {
           )}
 
           {selected && !loadingContent && (
-            <MarkdownViewer content={content} theme={ctx.theme} />
+            <MarkdownViewer
+              content={content}
+              theme={ctx.theme}
+              fontSize={fontSize}
+              currentFile={selected}
+              onNavigate={handleNavigate}
+              onAddComment={handleAddComment}
+              onEditComment={handleEditComment}
+              onResolveComment={handleResolveComment}
+            />
           )}
         </main>
       </div>
+
+      {composerState && (
+        <CommentComposer
+          theme={ctx.theme}
+          blockSnippet={blockSnippet(composerState.block)}
+          existing={composerState.existing}
+          defaultAuthor={loadAuthor()}
+          onCancel={() => setComposerState(null)}
+          onSave={handleSaveComment}
+        />
+      )}
     </div>
   );
 }

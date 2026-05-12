@@ -9,7 +9,6 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 
-// Directories never recursed into when listing markdown files.
 const SKIP_DIRS = new Set([
   '.git', '.svn', '.hg',
   'node_modules', '.pnpm-store',
@@ -21,6 +20,7 @@ const SKIP_DIRS = new Set([
 
 const MAX_FILES = 5000;
 const MAX_DEPTH = 12;
+const MAX_BODY = 10 * 1024 * 1024;
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -34,10 +34,7 @@ const server = http.createServer(async (req, res) => {
 
     if (method === 'GET' && url.pathname === '/files') {
       const project = url.searchParams.get('project');
-      if (!project) {
-        sendJson(res, 400, { error: 'missing_param', param: 'project' });
-        return;
-      }
+      if (!project) { sendJson(res, 400, { error: 'missing_param', param: 'project' }); return; }
       try {
         const files = await listMarkdownFiles(project);
         sendJson(res, 200, { files });
@@ -50,20 +47,34 @@ const server = http.createServer(async (req, res) => {
     if (method === 'GET' && url.pathname === '/file') {
       const project = url.searchParams.get('project');
       const rel = url.searchParams.get('path');
-      if (!project || !rel) {
-        sendJson(res, 400, { error: 'missing_param', params: ['project', 'path'] });
-        return;
-      }
+      if (!project || !rel) { sendJson(res, 400, { error: 'missing_param', params: ['project', 'path'] }); return; }
       const abs = safeJoin(project, rel);
-      if (!abs) {
-        sendJson(res, 403, { error: 'path_outside_project' });
-        return;
-      }
+      if (!abs) { sendJson(res, 403, { error: 'path_outside_project' }); return; }
       try {
         const content = await fs.readFile(abs, 'utf-8');
         sendJson(res, 200, { content, path: rel });
       } catch (err) {
         sendJson(res, 404, { error: 'read_failed', message: (err as Error).message });
+      }
+      return;
+    }
+
+    if (method === 'POST' && url.pathname === '/file') {
+      const project = url.searchParams.get('project');
+      const rel = url.searchParams.get('path');
+      if (!project || !rel) { sendJson(res, 400, { error: 'missing_param', params: ['project', 'path'] }); return; }
+      const abs = safeJoin(project, rel);
+      if (!abs) { sendJson(res, 403, { error: 'path_outside_project' }); return; }
+      try {
+        const body = await readBody(req);
+        if (!body || typeof body.content !== 'string') {
+          sendJson(res, 400, { error: 'missing_field', field: 'content' });
+          return;
+        }
+        await fs.writeFile(abs, body.content, 'utf-8');
+        sendJson(res, 200, { ok: true, path: rel, bytes: Buffer.byteLength(body.content, 'utf-8') });
+      } catch (err) {
+        sendJson(res, 500, { error: 'write_failed', message: (err as Error).message });
       }
       return;
     }
@@ -79,7 +90,19 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown): void
   res.end(JSON.stringify(body));
 }
 
-/** Resolve a relative path under a project root, refusing traversal escapes. */
+async function readBody(req: http.IncomingMessage): Promise<any> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of req as AsyncIterable<Buffer>) {
+    total += chunk.length;
+    if (total > MAX_BODY) throw new Error('body too large');
+    chunks.push(chunk);
+  }
+  const raw = Buffer.concat(chunks).toString('utf-8');
+  if (!raw) return null;
+  return JSON.parse(raw);
+}
+
 function safeJoin(project: string, rel: string): string | null {
   const absProject = path.resolve(project);
   const absTarget = path.resolve(absProject, rel);
