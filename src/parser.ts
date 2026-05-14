@@ -64,6 +64,9 @@ export function splitRawBlocks(content: string): { source: string; startOffset: 
   const blocks: { source: string; startOffset: number; endOffset: number }[] = [];
   let i = 0;
   let inFence = false;
+  // Tracks whether we're inside a multi-line `<!-- @comment ... -->` ... `<!-- /@comment -->`
+  // marker so a blank line in the comment body doesn't split the block in two.
+  let inMarker = false;
 
   while (i < normalized.length) {
     while (i < normalized.length && normalized[i] === '\n') i++;
@@ -74,10 +77,28 @@ export function splitRawBlocks(content: string): { source: string; startOffset: 
 
     while (end < normalized.length) {
       const atLineStart = end === 0 || normalized[end - 1] === '\n';
-      if (atLineStart && normalized.substring(end, end + 3) === '```') {
-        inFence = !inFence;
+
+      if (atLineStart) {
+        if (normalized.substring(end, end + 3) === '```') {
+          inFence = !inFence;
+        } else if (!inFence) {
+          const nl = normalized.indexOf('\n', end);
+          const line = normalized.substring(end, nl === -1 ? normalized.length : nl);
+          if (!inMarker && COMMENT_OPEN_RE.test(line)) {
+            // Skip entering marker mode when open and close are on the same line
+            // (mono-line marker — already a self-contained block).
+            if (!COMMENT_CLOSE_RE.test(line)) inMarker = true;
+          } else if (inMarker && COMMENT_CLOSE_RE.test(line)) {
+            inMarker = false;
+            // The close line is included in the current block; the next blank-line
+            // check past this line will naturally end the block.
+          }
+        }
       }
-      if (!inFence && normalized[end] === '\n' && (end + 1 >= normalized.length || normalized[end + 1] === '\n')) {
+
+      if (!inFence && !inMarker
+          && normalized[end] === '\n'
+          && (end + 1 >= normalized.length || normalized[end + 1] === '\n')) {
         break;
       }
       end++;
